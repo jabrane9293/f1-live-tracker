@@ -6,7 +6,7 @@ on:
       - main
 
 env:
-  PROJECT_ID: ton-projet-gcp
+  PROJECT_ID: f1-live-tracker-app
   SERVICE_NAME: f1-live-tracker
   REGION: europe-west1
 
