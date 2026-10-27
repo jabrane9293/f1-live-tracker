@@ -36,7 +36,7 @@ class StreamManager:
         self.current_session = await asyncio.to_thread(self.client.get_latest_session)
         
         if not self.current_session:
-            logger.warning("Aucune session active trouvée. Le polling tournera à vide.")
+            logger.warning("Aucune session active trouvée. Le polling tournera à vide. ")
         else:
             logger.info(f"Session accrochée : {self.current_session.get('session_name')}")
 
