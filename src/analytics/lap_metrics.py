@@ -56,7 +56,6 @@ FALLBACK_DRIVERS = {
 }
 
 def format_lap_time(seconds: float) -> str:
-    """Formatte les secondes au format standard F1 (M:SS.mmm)."""
     if pd.isna(seconds) or seconds is None or seconds <= 0:
         return "-"
     minutes = int(seconds // 60)
@@ -78,7 +77,6 @@ class LapAnalyzer:
                     self.df[c] = pd.to_numeric(self.df[c], errors='coerce')
 
     def get_driver_info(self, driver_number: int) -> Dict[str, str]:
-        """Récupère le nom et l'écurie avec gestion du fallback."""
         if not self.drivers_df.empty and 'driver_number' in self.drivers_df.columns:
             self.drivers_df['driver_number'] = pd.to_numeric(self.drivers_df['driver_number'], errors='coerce')
             match = self.drivers_df[self.drivers_df['driver_number'] == driver_number]
@@ -88,24 +86,31 @@ class LapAnalyzer:
                 team = row.get('team_name') or "N/A"
                 if name != str(driver_number) and team != "N/A":
                     return {"full_name": name, "team_name": team}
-
-        # Utilisation du fallback si non trouvé dans l'API
         return FALLBACK_DRIVERS.get(driver_number, {"full_name": f"Pilote #{driver_number}", "team_name": "Écurie N/A"})
 
     def get_leaderboard(self) -> pd.DataFrame:
         if self.df.empty or 'lap_duration' not in self.df.columns:
             return pd.DataFrame()
 
-        valid_laps = self.df.dropna(subset=['lap_duration'])
+        # Filtrage strict : Exclure les out-laps et les tours sans les 3 secteurs valides
+        valid_laps = self.df.copy()
+        if 'is_pit_out_lap' in valid_laps.columns:
+            valid_laps = valid_laps[valid_laps['is_pit_out_lap'] != True]
+            
+        sector_cols = ['duration_sector_1', 'duration_sector_2', 'duration_sector_3']
+        if all(col in valid_laps.columns for col in sector_cols):
+            valid_laps = valid_laps.dropna(subset=sector_cols + ['lap_duration'])
+        else:
+            valid_laps = valid_laps.dropna(subset=['lap_duration'])
+
         if valid_laps.empty:
             return pd.DataFrame()
 
+        # Meilleur tour absolu par pilote
         idx_bests = valid_laps.groupby('driver_number')['lap_duration'].idxmin()
         best_laps = valid_laps.loc[idx_bests].copy()
 
-        # Application du nom et de l'équipe
-        names = []
-        teams = []
+        names, teams = [], []
         for d_num in best_laps['driver_number']:
             info = self.get_driver_info(d_num)
             names.append(info["full_name"])
@@ -113,8 +118,6 @@ class LapAnalyzer:
 
         best_laps['full_name'] = names
         best_laps['team_name'] = teams
-
-        # Formatage des temps
         best_laps['Temps au tour'] = best_laps['lap_duration'].apply(format_lap_time)
         best_laps['Secteur 1'] = best_laps['duration_sector_1'].apply(format_lap_time)
         best_laps['Secteur 2'] = best_laps['duration_sector_2'].apply(format_lap_time)
@@ -152,7 +155,6 @@ class LapAnalyzer:
         comparison['lap_delta'] = comparison['lap_duration_A'] - comparison['lap_duration_B']
         comparison['cumulative_delta'] = comparison['lap_delta'].cumsum()
         
-        # Ajout des formats lisibles M:SS.mmm pour le survol Plotly
         comparison['time_A_str'] = comparison['lap_duration_A'].apply(format_lap_time)
         comparison['time_B_str'] = comparison['lap_duration_B'].apply(format_lap_time)
         comparison['delta_str'] = comparison['cumulative_delta'].apply(lambda x: f"{x:+.3f}s")

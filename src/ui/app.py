@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import time
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -34,7 +35,6 @@ if mode == "Replay Historique":
     meetings = client.get_meetings(year=year)
     
     if meetings:
-        # Nettoyage des noms de GP pour éviter la truncation dans la sidebar
         meeting_options = {}
         for m in meetings:
             clean_name = f"{m.get('country_name', 'GP')} - {m.get('meeting_name', '')}".strip(" -")
@@ -78,33 +78,62 @@ if session_key:
 
     # --- TAB 1 : LEADERBOARD ---
     with tab_lb:
-        st.subheader("Classement des meilleurs temps")
+        st.subheader("Classement officiel des meilleurs temps")
         lb_df = analyzer.get_leaderboard()
         if not lb_df.empty:
             st.dataframe(lb_df, use_container_width=True, hide_index=True)
         else:
-            st.info("Aucun chrono enregistré sur cette session.")
+            st.info("Aucun chrono valide enregistré sur cette session.")
 
         st.subheader("Secteurs Violets (Absolus)")
         purples = analyzer.get_purple_sectors()
         c1, c2, c3 = st.columns(3)
         c1.metric("Secteur 1", purples.get("duration_sector_1", "-"))
-        c2.metric("Secteur 2", purples.get("duration_sector_2", "-"))
+        c2.metric("Secteur 2", purples.get("duration_sector_3", "-") if 'duration_sector_3' in purples else purples.get("duration_sector_2", "-"))
         c3.metric("Secteur 3", purples.get("duration_sector_3", "-"))
 
     # --- TAB 2 : TRACÉ & TÉLÉMÉTRIE 2D REPLAY ---
     with tab_telemetry:
-        st.subheader("Tracé du circuit et Replay de positionnement")
+        st.subheader("Tracé du circuit et Simulation de course")
         
-        # Récupération du tracé via le pilote leader pour éviter les timeouts
-        leader_num = lb_df.iloc[0]['driver_number'] if not lb_df.empty else 1
-        circuit_locs = client.get_location(session_key, driver_number=leader_num)
+        # Récupération robuste du tracé (Fallback multi-pilotes)
+        circuit_locs = []
+        if laps_data:
+            unique_drivers = list(set(pd.to_numeric(d['driver_number']) for d in laps_data if 'driver_number' in d))
+            for d_num in unique_drivers:
+                circuit_locs = client.get_location(session_key, driver_number=d_num)
+                if circuit_locs and len(circuit_locs) > 50:
+                    break
 
         if circuit_locs:
-            circuit_df = pd.DataFrame(circuit_locs).iloc[::3] # Sous-échantillonnage pour la fluidité
+            circuit_df = pd.DataFrame(circuit_locs).iloc[::4] # Subsampling
             
-            # Figure de base : Le tracé du circuit
+            # Contrôles de simulation Play / Pause
+            col_play, col_pause, col_status = st.columns([1, 1, 4])
+            if "is_playing" not in st.session_state:
+                st.session_state.is_playing = False
+
+            if col_play.button("▶️ Lancer le Replay"):
+                st.session_state.is_playing = True
+            if col_pause.button("⏸️ Pause"):
+                st.session_state.is_playing = False
+
+            max_laps = int(pd.DataFrame(laps_data)['lap_number'].max()) if laps_data else 1
+            
+            if "replay_lap" not in st.session_state:
+                st.session_state.replay_lap = 1
+
+            st.session_state.replay_lap = st.slider(
+                "🕹️ Tour de course :", 
+                min_value=1, 
+                max_value=max_laps, 
+                value=st.session_state.replay_lap
+            )
+
+            # Rendu du Graphique 2D
             fig_map = go.Figure()
+            
+            # Tracé gris de la piste
             fig_map.add_trace(go.Scatter(
                 x=circuit_df['x'], y=circuit_df['y'],
                 mode='lines',
@@ -113,30 +142,27 @@ if session_key:
                 hoverinfo='skip'
             ))
 
-            # Curseur de Replay / Tour
+            # Positionnement de tous les pilotes actifs sur ce tour
             if laps_data:
-                max_laps = int(pd.DataFrame(laps_data)['lap_number'].max())
-                replay_lap = st.slider("🕹️ Simuler le tour :", min_value=1, max_value=max_laps, value=max_laps)
-                
-                # Position des pilotes à ce tour précis (basé sur leur meilleur secteur / tour)
                 laps_df = pd.DataFrame(laps_data)
-                lap_positions = laps_df[laps_df['lap_number'] == replay_lap]
+                current_laps = laps_df[laps_df['lap_number'] == st.session_state.replay_lap]
 
-                if not lap_positions.empty:
-                    for _, row in lap_positions.iterrows():
-                        d_num = int(row['driver_number'])
-                        info = analyzer.get_driver_info(d_num)
-                        
-                        # Simulation du placement sur le tracé en fonction de la progression
-                        point = circuit_df.iloc[hash(d_num + replay_lap) % len(circuit_df)]
-                        fig_map.add_trace(go.Scatter(
-                            x=[point['x']], y=[point['y']],
-                            mode='markers+text',
-                            marker=dict(size=12),
-                            text=[f"#{d_num}"],
-                            textposition="top center",
-                            name=f"{info['full_name']} ({info['team_name']})"
-                        ))
+                for _, row in current_laps.iterrows():
+                    d_num = int(row['driver_number'])
+                    info = analyzer.get_driver_info(d_num)
+                    
+                    # Offset virtuel sur le tracé pour représenter la progression
+                    pos_idx = (int(d_num) * 17 + st.session_state.replay_lap * 23) % len(circuit_df)
+                    point = circuit_df.iloc[pos_idx]
+
+                    fig_map.add_trace(go.Scatter(
+                        x=[point['x']], y=[point['y']],
+                        mode='markers+text',
+                        marker=dict(size=12),
+                        text=[f"#{d_num}"],
+                        textposition="top center",
+                        name=f"{info['full_name']} ({info['team_name']})"
+                    ))
 
             fig_map.update_layout(
                 template="plotly_dark",
@@ -144,9 +170,17 @@ if session_key:
                 xaxis=dict(showgrid=False, zeroline=False, visible=False),
                 yaxis=dict(showgrid=False, zeroline=False, visible=False)
             )
-            st.plotly_chart(fig_map, use_container_width=True)
+            
+            map_placeholder = st.empty()
+            map_placeholder.plotly_chart(fig_map, use_container_width=True)
+
+            # Moteur de boucle Play / Pause
+            if st.session_state.is_playing and st.session_state.replay_lap < max_laps:
+                time.sleep(1)
+                st.session_state.replay_lap += 1
+                st.rerun()
         else:
-            st.warning("Génération du tracé en cours ou données GPS temporairement indisponibles.")
+            st.warning("Données GPS de positionnement indisponibles pour cette séance.")
 
     # --- TAB 3 : STRATÉGIE & IA ---
     with tab_ai:
@@ -156,17 +190,21 @@ if session_key:
             drivers_list = sorted(list(set(pd.to_numeric(d['driver_number']) for d in laps_data if 'driver_number' in d)))
             
             col_a, col_b = st.columns(2)
+            
+            # Utilisation de keys explicites pour fixer les Sélecteurs de pilotes sans reset
             d_chase = col_a.selectbox(
                 "Pilote 1 (Poursuivant) :", 
                 drivers_list, 
                 format_func=lambda x: f"{analyzer.get_driver_info(x)['full_name']} (#{x})", 
-                index=0
+                index=0,
+                key="strat_driver_chase"
             )
             d_lead = col_b.selectbox(
                 "Pilote 2 (Devant) :", 
                 drivers_list, 
                 format_func=lambda x: f"{analyzer.get_driver_info(x)['full_name']} (#{x})", 
-                index=min(1, len(drivers_list)-1)
+                index=min(1, len(drivers_list)-1),
+                key="strat_driver_lead"
             )
 
             if d_chase != d_lead:
@@ -177,24 +215,30 @@ if session_key:
                     info_lead = analyzer.get_driver_info(d_lead)
 
                     max_avail_lap = int(delta_df['lap_number'].max())
-                    selected_lap = st.slider("Sélectionner un tour pour l'analyse stratégique :", 1, max_avail_lap, max_avail_lap)
+                    
+                    # Le tour par défaut commence désormais au Tour 1
+                    selected_lap = st.slider(
+                        "Sélectionner un tour pour l'analyse stratégique :", 
+                        min_value=1, 
+                        max_value=max_avail_lap, 
+                        value=1,
+                        key="strat_lap_slider"
+                    )
 
-                    # 1. Alerte Stratégique dynamique selon le tour sélectionné
+                    # 1. Alerte Stratégique dynamique au tour sélectionné
                     st.markdown("### 🚨 Analyse de Piste")
-                    if selected_lap == max_avail_lap and selected_lap > 50:
-                        st.info("🏁 Fin de course atteinte : Aucune opportunité d'undercut restante.")
+                    current_gap = delta_df[delta_df['lap_number'] <= selected_lap]['cumulative_delta'].iloc[-1]
+                    
+                    if abs(current_gap) <= 2.0:
+                        st.success(
+                            f"🚨 **ALERTE STRATÉGIE (Tour {selected_lap})** : "
+                            f"{info_chase['full_name']} est à **{abs(current_gap):.3f}s** de {info_lead['full_name']}. "
+                            f"Fenêtre d'undercut OUVERTE s'il rentre aux stands au tour suivant !"
+                        )
                     else:
-                        current_gap = delta_df[delta_df['lap_number'] <= selected_lap]['cumulative_delta'].iloc[-1]
-                        if abs(current_gap) <= 2.0:
-                            st.success(
-                                f"🚨 **ALERTE STRATÉGIE (Tour {selected_lap})** : "
-                                f"{info_chase['full_name']} est à **{abs(current_gap):.3f}s** de {info_lead['full_name']}. "
-                                f"Fenêtre d'undercut OUVERTE s'il rentre aux stands au tour suivant !"
-                            )
-                        else:
-                            st.info(f"Écart au tour {selected_lap} : {abs(current_gap):.3f}s. Hors fenêtre d'undercut (> 2.0s).")
+                        st.info(f"Écart au tour {selected_lap} : {abs(current_gap):.3f}s. Hors fenêtre d'undercut (> 2.0s).")
 
-                    # 2. Graphique Plotly Subplots (Chronos individuels + Delta cumulé)
+                    # 2. Graphique Plotly Subplots (2 courbes individuelles + Delta)
                     fig = make_subplots(
                         rows=2, cols=1, 
                         shared_xaxes=True, 
@@ -202,7 +246,6 @@ if session_key:
                         vertical_spacing=0.12
                     )
 
-                    # Courbe Pilote 1
                     fig.add_trace(go.Scatter(
                         x=delta_df['lap_number'], y=delta_df['lap_duration_A'],
                         name=info_chase['full_name'],
@@ -210,7 +253,6 @@ if session_key:
                         hovertemplate="Tour %{x}<br>Chrono: %{hovertext}<extra></extra>"
                     ), row=1, col=1)
 
-                    # Courbe Pilote 2
                     fig.add_trace(go.Scatter(
                         x=delta_df['lap_number'], y=delta_df['lap_duration_B'],
                         name=info_lead['full_name'],
@@ -218,7 +260,6 @@ if session_key:
                         hovertemplate="Tour %{x}<br>Chrono: %{hovertext}<extra></extra>"
                     ), row=1, col=1)
 
-                    # Courbe Delta Cumulé
                     fig.add_trace(go.Scatter(
                         x=delta_df['lap_number'], y=delta_df['cumulative_delta'],
                         name="Delta Cumulé",
@@ -244,7 +285,6 @@ if session_key:
                 st.metric("Humidité", f"{w_latest.get('humidity')} %")
                 st.metric("Pluie", "Oui 🌧️" if w_latest.get('rainfall') else "Non ☀️")
                 
-                # Évolution météo au fil de la séance
                 if len(w_df) > 1:
                     fig_w = px.line(w_df, x='date', y=['track_temperature', 'air_temperature'], title="Évolution des températures")
                     fig_w.update_layout(template="plotly_dark")
