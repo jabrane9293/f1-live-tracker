@@ -1,168 +1,177 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import threading
-import asyncio
-import time
+import plotly.graph_objects as go
 
-# Import de nos modules métiers
-from src.ingestion.stream_manager import StreamManager
-from src.analytics.lap_metrics import LapAnalyzer
+from src.ingestion.openf1_client import OpenF1Client
+from src.analytics.lap_metrics import LapAnalyzer, format_lap_time
 from src.models.lap_predictor import LapPredictor
 from src.agents.strategist_agent import StrategistAgent
 from src.agents.anomaly_agent import AnomalyDetectorAgent
 
-# 1. Configuration de la page (Optimisé Mobile/Desktop)
 st.set_page_config(
-    page_title="F1 Live Tracker & AI Strategy",
+    page_title="F1 Live & Replay Center",
     page_icon="🏎️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# 2. Initialisation des composants Backend en Cache (Singleton)
+# Instance client unique
 @st.cache_resource
-def init_backend():
-    """Initialise les agents et le gestionnaire de flux une seule fois."""
-    manager = StreamManager(poll_interval=5)
+def get_client():
+    return OpenF1Client()
+
+client = get_client()
+
+# --- SIDEBAR : SELECTION LIVE OU REPLAY ---
+st.sidebar.title("🏎️ Session Control")
+mode = st.sidebar.radio("Mode d'analyse :", ["Dernière Session / Live", "Replay Historique"])
+
+session_key = None
+selected_session_info = None
+
+if mode == "Replay Historique":
+    year = st.sidebar.selectbox("Année :", [2026, 2025, 2024, 2023], index=1)
+    meetings = client.get_meetings(year=year)
     
-    # Lancement du StreamManager asynchrone dans un thread séparé
-    def run_async_loop():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(manager.start())
-        loop.run_forever()
+    if meetings:
+        meeting_options = {m['meeting_official_name']: m['meeting_key'] for m in meetings}
+        selected_meeting_name = st.sidebar.selectbox("Grand Prix :", list(meeting_options.keys()))
+        meeting_key = meeting_options[selected_meeting_name]
         
-    thread = threading.Thread(target=run_async_loop, daemon=True)
-    thread.start()
-    
-    # Attendre quelques secondes que le premier run récupère les données
-    time.sleep(3)
-    
-    return {
-        "stream_manager": manager,
-        "predictor": LapPredictor(),
-        "strategist": StrategistAgent(pit_stop_loss_sec=22.0),
-        "anomaly_detector": AnomalyDetectorAgent()
-    }
-
-backend = init_backend()
-manager = backend["stream_manager"]
-predictor = backend["predictor"]
-strategist = backend["strategist"]
-anomaly_detector = backend["anomaly_detector"]
-
-# 3. Récupération des données en temps réel
-laps_data = manager.get_latest_laps()
-session_info = manager.get_session_info()
-
-# Entraînement du modèle ML à la volée
-if laps_data:
-    predictor.train(laps_data)
-
-# 4. Interface Utilisateur (UI)
-st.title("🏎️ F1 Live Tracker & AI Strategist")
-
-if session_info:
-    st.caption(f"Session en cours : {session_info.get('meeting_name')} - {session_info.get('session_name')}")
+        sessions = client.get_sessions(meeting_key=meeting_key)
+        if sessions:
+            session_options = {f"{s.get('session_name')} ({s.get('session_type')})": s for s in sessions}
+            selected_session_label = st.sidebar.selectbox("Séance :", list(session_options.keys()))
+            selected_session_info = session_options[selected_session_label]
+            session_key = selected_session_info.get("session_key")
 else:
-    st.warning("Aucune session active détectée sur l'API OpenF1 pour le moment.")
+    latest = client.get_latest_session()
+    if latest:
+        session_key = latest.get("session_key")
+        selected_session_info = latest
 
-# Utilisation des onglets (Idéal pour l'iPhone 11 Pro)
-tab1, tab2, tab3 = st.tabs(["📊 Leaderboard", "🤖 Alertes IA (Race Control)", "📈 Stratégie & Deltas"])
+# --- CHARGEMENT DES DONNÉES DE LA SESSION SÉLECTIONNÉE ---
+if session_key:
+    st.title(f"🏎️ {selected_session_info.get('location', 'F1')} - {selected_session_info.get('session_name', 'Session')}")
+    st.caption(f"Circuit: {selected_session_info.get('circuit_short_name')} | Key: {session_key}")
 
-if not laps_data:
-    st.info("En attente des données de télémétrie... L'API se charge.")
-else:
-    analyzer = LapAnalyzer(laps_data)
+    # Data fetching
+    laps_data = client.get_laps(session_key)
+    drivers_data = client.get_drivers(session_key)
+    weather_data = client.get_weather(session_key)
+    race_control = client.get_race_control(session_key)
 
-    # --- ONGLET 1 : LEADERBOARD ---
-    with tab1:
-        st.subheader("Meilleurs temps au tour absolus")
-        best_laps = analyzer.get_best_laps()
-        if not best_laps.empty:
-            # Formatage pour un affichage propre
+    analyzer = LapAnalyzer(laps_data, drivers_data)
+
+    # STRUCTURE DES ONGLETS
+    tab_lb, tab_telemetry, tab_ai, tab_weather = st.tabs([
+        "📊 Leaderboard & Stints", 
+        "🗺️ Tracé & Télémétrie 2D", 
+        "🤖 Stratégie & IA", 
+        "🚩 Météo & Race Control"
+    ])
+
+    # --- TAB 1 : LEADERBOARD ---
+    with tab_lb:
+        st.subheader("Classement des meilleurs temps")
+        lb_df = analyzer.get_leaderboard()
+        
+        if not lb_df.empty:
             st.dataframe(
-                best_laps.style.format({"lap_duration": "{:.3f} s"}),
+                lb_df,
                 use_container_width=True,
                 hide_index=True
             )
-        
-        st.subheader("Secteurs Violets (Meilleurs absolus)")
-        purple = analyzer.get_purple_sectors()
-        cols = st.columns(3)
-        cols[0].metric("Secteur 1", f"{purple.get('duration_sector_1', 0):.3f}s")
-        cols[1].metric("Secteur 2", f"{purple.get('duration_sector_2', 0):.3f}s")
-        cols[2].metric("Secteur 3", f"{purple.get('duration_sector_3', 0):.3f}s")
-
-    # --- ONGLET 2 : ALERTES IA ---
-    with tab2:
-        st.subheader("Race Control & Anomalies en piste")
-        # 1. Anomalies
-        anomalies = anomaly_detector.scan_grid_for_anomalies(laps_data)
-        if anomalies:
-            for alert in anomalies:
-                if "INCIDENT" in alert:
-                    st.error(alert, icon="🔴")
-                else:
-                    st.warning(alert, icon="🟠")
         else:
-            st.success("🟢 Piste claire. Aucune anomalie détectée.")
+            st.info("Aucun chrono enregistré sur cette session.")
 
-        st.markdown("---")
+        st.subheader("Secteurs Violets (Absolus)")
+        purples = analyzer.get_purple_sectors()
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Secteur 1", purples.get("duration_sector_1", "-"))
+        c2.metric("Secteur 2", purples.get("duration_sector_2", "-"))
+        c3.metric("Secteur 3", purples.get("duration_sector_3", "-"))
+
+    # --- TAB 2 : TRACÉ & TÉLÉMÉTRIE ---
+    with tab_telemetry:
+        st.subheader("Carte du circuit et position des monoplaces (X, Y)")
+        loc_data = client.get_location(session_key)
         
-        st.subheader("Ingénieur de Piste (Prédictions)")
-        # Sélection d'un pilote pour voir sa prédiction (ex: 1 pour Verstappen, 16 pour Leclerc)
-        unique_drivers = sorted(list(set(d['driver_number'] for d in laps_data if 'driver_number' in d)))
-        selected_driver = st.selectbox("Sélectionnez un pilote pour analyser son prochain tour :", unique_drivers)
+        if loc_data:
+            loc_df = pd.DataFrame(loc_data)
+            # Sous-échantillonnage pour fluidité d'affichage
+            sample_loc = loc_df.iloc[::5] 
+            
+            # Map couleur écurie si disponible
+            fig_map = px.scatter(
+                sample_loc, 
+                x='x', 
+                y='y', 
+                color='driver_number',
+                title="Représentation 2D des coordonnées télémétriques",
+                labels={'x': 'Position X', 'y': 'Position Y'},
+                color_continuous_scale=px.colors.qualitative.Plotly
+            )
+            fig_map.update_traces(marker=dict(size=4))
+            fig_map.update_layout(template="plotly_dark", height=600)
+            st.plotly_chart(fig_map, use_container_width=True)
+        else:
+            st.info("Données de position GPS/Télémétrie indisponibles pour cette séance.")
+
+    # --- TAB 3 : STRATÉGIE & IA ---
+    with tab_ai:
+        st.subheader("Analyse d'Undercut & Modélisation")
+        if laps_data and len(laps_data) > 10:
+            predictor = LapPredictor()
+            predictor.train(laps_data)
+            strategist = StrategistAgent()
+            
+            drivers_list = sorted(list(set(d['driver_number'] for d in laps_data if 'driver_number' in d)))
+            col_a, col_b = st.columns(2)
+            d_chase = col_a.selectbox("Pilote Poursuivant :", drivers_list, index=0)
+            d_lead = col_b.selectbox("Pilote Devant :", drivers_list, index=min(1, len(drivers_list)-1))
+
+            if d_chase != d_lead:
+                delta_df = analyzer.calculate_driver_delta(d_chase, d_lead)
+                if not delta_df.empty:
+                    alert = strategist.analyze_undercut_opportunity(d_chase, d_lead, delta_df)
+                    if alert:
+                        st.warning(alert, icon="🚨")
+
+                    fig_delta = px.line(
+                        delta_df, 
+                        x='lap_number', 
+                        y='cumulative_delta',
+                        title=f"Écart cumulé (s) : {d_chase} vs {d_lead}"
+                    )
+                    fig_delta.update_yaxes(autorange="reversed")
+                    st.plotly_chart(fig_delta, use_container_width=True)
+        else:
+            st.info("Données insuffisantes pour l'analyse IA.")
+
+    # --- TAB 4 : MÉTÉO & RACE CONTROL ---
+    with tab_weather:
+        col_w, col_rc = st.columns(2)
         
-        if selected_driver:
-            pred = predictor.predict_next_lap(laps_data, selected_driver)
-            cliff_alert = strategist.detect_tire_cliff(selected_driver, predictor, laps_data)
-            
-            if pred:
-                st.metric(f"Prédiction prochain tour (Pilote {selected_driver})", f"{pred:.3f} s")
-            if cliff_alert:
-                st.warning(cliff_alert, icon="⚠️")
+        with col_w:
+            st.subheader("Conditions Météorologiques")
+            if weather_data:
+                w_latest = weather_data[-1]
+                st.metric("Piste (°C)", f"{w_latest.get('track_temperature')} °C")
+                st.metric("Air (°C)", f"{w_latest.get('air_temperature')} °C")
+                st.metric("Humidité", f"{w_latest.get('humidity')} %")
+                st.metric("Pluie", "Oui 🌧️" if w_latest.get('rainfall') else "Non ☀️")
             else:
-                st.info("Pneumatiques dans la fenêtre de fonctionnement optimale.")
+                st.write("Aucune donnée météo.")
 
-    # --- ONGLET 3 : STRATÉGIE ET DELTAS ---
-    with tab3:
-        st.subheader("Analyse d'Undercut en temps réel")
-        col_chaser, col_leader = st.columns(2)
-        driver_chasing = col_chaser.selectbox("Pilote Poursuivant (ex: 16)", unique_drivers, index=0)
-        driver_leading = col_leader.selectbox("Pilote Devant (ex: 1)", unique_drivers, index=min(1, len(unique_drivers)-1))
-
-        if driver_chasing != driver_leading:
-            # Calcul du delta
-            delta_df = analyzer.calculate_driver_delta(driver_chasing, driver_leading)
-            
-            if not delta_df.empty:
-                # Alerte Stratégique
-                undercut_alert = strategist.analyze_undercut_opportunity(driver_chasing, driver_leading, delta_df)
-                if undercut_alert:
-                    st.success(undercut_alert, icon="🚨")
-                
-                # Graphique Plotly Responsive
-                fig = px.line(
-                    delta_df, 
-                    x='lap_number', 
-                    y='cumulative_delta',
-                    title=f"Écart cumulé en secondes : Pilote {driver_chasing} vs Pilote {driver_leading}",
-                    labels={'lap_number': 'Numéro du Tour', 'cumulative_delta': 'Écart (secondes)'},
-                    markers=True
-                )
-                # Ligne zéro pour repère visuel
-                fig.add_hline(y=0, line_dash="dash", line_color="white", opacity=0.5)
-                # Inverser l'axe Y (plus le delta est négatif, plus le poursuivant rattrape)
-                fig.update_yaxes(autorange="reversed")
-                
-                st.plotly_chart(fig, use_container_width=True)
+        with col_rc:
+            st.subheader("Direction de course (Race Control)")
+            if race_control:
+                rc_df = pd.DataFrame(race_control)[['date', 'category', 'message', 'flag']].tail(10)
+                st.dataframe(rc_df, use_container_width=True, hide_index=True)
             else:
-                st.info("Pas assez de tours en commun pour calculer le delta.")
+                st.write("Aucun message de direction de course.")
 
-# Bouton de rafraîchissement manuel pour l'UI (le backend tourne déjà tout seul)
-st.sidebar.button("🔄 Rafraîchir les données")
-st.sidebar.markdown("---")
-st.sidebar.caption("Déployé via GitHub Actions sur Google Cloud Run.")
+else:
+    st.error("Impossible de récupérer les données de session OpenF1.")

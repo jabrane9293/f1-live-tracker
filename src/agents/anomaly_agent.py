@@ -24,7 +24,7 @@ class AnomalyDetectorAgent:
         sector_name: str = 'duration_sector_1'
     ) -> Optional[str]:
         """
-        Analyse le dernier secteur d'un pilote en le comparant à son historique récent.
+        Analyse le dernier secteur  d'un pilote en le comparant à son historique récent.
         """
         if not laps_data:
             return None
