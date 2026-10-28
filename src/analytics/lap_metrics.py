@@ -3,25 +3,56 @@ from typing import List, Dict, Optional
 
 # Dictionnaire de secours pour garantir que les noms/écuries s'affichent toujours
 FALLBACK_DRIVERS = {
-    1: {"full_name": "Max VERSTAPPEN", "team_name": "Red Bull Racing", "team_colour": "3671C6"},
-    16: {"full_name": "Charles LECLERC", "team_name": "Ferrari", "team_colour": "E8002D"},
-    44: {"full_name": "Lewis HAMILTON", "team_name": "Ferrari", "team_colour": "E8002D"},
+    # 1. McLaren Mastercard F1 Team
+    1: {"full_name": "Lando NORRIS", "team_name": "McLaren", "team_colour": "FF8000"},
     4: {"full_name": "Lando NORRIS", "team_name": "McLaren", "team_colour": "FF8000"},
     81: {"full_name": "Oscar PIASTRI", "team_name": "McLaren", "team_colour": "FF8000"},
+
+    # 2. Oracle Red Bull Racing
+    3: {"full_name": "Max VERSTAPPEN", "team_name": "Red Bull Racing", "team_colour": "3671C6"},
+    6: {"full_name": "Isack HADJAR", "team_name": "Red Bull Racing", "team_colour": "3671C6"},
+
+    # 3. Scuderia Ferrari HP
+    16: {"full_name": "Charles LECLERC", "team_name": "Ferrari", "team_colour": "E8002D"},
+    44: {"full_name": "Lewis HAMILTON", "team_name": "Ferrari", "team_colour": "E8002D"},
+
+    # 4. Mercedes-AMG Petronas F1 Team
     63: {"full_name": "George RUSSELL", "team_name": "Mercedes", "team_colour": "27F4D2"},
     12: {"full_name": "Kimi ANTONELLI", "team_name": "Mercedes", "team_colour": "27F4D2"},
+
+    # 5. Visa Cash App Racing Bulls
+    22: {"full_name": "Yuki TSUNODA", "team_name": "Racing Bulls", "team_colour": "6692FF"},
+    30: {"full_name": "Liam LAWSON", "team_name": "Racing Bulls", "team_colour": "6692FF"},
+    37: {"full_name": "Arvid LINDBLAD", "team_name": "Racing Bulls", "team_colour": "6692FF"},
+
+    # 6. BWT Alpine F1 Team
+    10: {"full_name": "Pierre GASLY", "team_name": "Alpine", "team_colour": "0093CC"},
+    43: {"full_name": "Franco COLAPINTO", "team_name": "Alpine", "team_colour": "0093CC"},
+
+    # 7. MoneyGram Haas F1 Team
+    31: {"full_name": "Esteban OCON", "team_name": "Haas", "team_colour": "B6BABD"},
+    87: {"full_name": "Oliver BEARMAN", "team_name": "Haas", "team_colour": "B6BABD"},
+
+    # 8. Audi F1 Team
+    27: {"full_name": "Nico HÜLKENBERG", "team_name": "Audi", "team_colour": "52E252"},
+    5: {"full_name": "Gabriel BORTOLETO", "team_name": "Audi", "team_colour": "52E252"},
+
+    # 9. Williams Racing
+    23: {"full_name": "Alexander ALBON", "team_name": "Williams", "team_colour": "64C4FF"},
+    55: {"full_name": "Carlos SAINZ", "team_name": "Williams", "team_colour": "64C4FF"},
+
+    # 10. Aston Martin Cognizant F1 Team
     14: {"full_name": "Fernando ALONSO", "team_name": "Aston Martin", "team_colour": "229971"},
     18: {"full_name": "Lance STROLL", "team_name": "Aston Martin", "team_colour": "229971"},
-    10: {"full_name": "Pierre GASLY", "team_name": "Alpine", "team_colour": "0093CC"},
-    31: {"full_name": "Esteban OCON", "team_name": "Haas", "team_colour": "B6BABD"},
-    55: {"full_name": "Carlos SAINZ", "team_name": "Williams", "team_colour": "64C4FF"},
-    23: {"full_name": "Alexander ALBON", "team_name": "Williams", "team_colour": "64C4FF"},
-    5: {"full_name": "Gabriel BORTOLETO", "team_name": "Sauber", "team_colour": "52E252"},
-    27: {"full_name": "Nico HULKENBERG", "team_name": "Sauber", "team_colour": "52E252"},
-    30: {"full_name": "Liam LAWSON", "team_name": "Racing Bulls", "team_colour": "6692FF"},
-    6: {"full_name": "Isack HADJAR", "team_name": "Racing Bulls", "team_colour": "6692FF"},
-    41: {"full_name": "Oliver BEARMAN", "team_name": "Haas", "team_colour": "B6BABD"},
-    87: {"full_name": "Oliver BEARMAN", "team_name": "Haas", "team_colour": "B6BABD"}
+
+    # 11. Cadillac Formula 1 Team
+    77: {"full_name": "Valtteri BOTTAS", "team_name": "Cadillac", "team_colour": "FFD700"},
+    11: {"full_name": "Sergio PEREZ", "team_name": "Cadillac", "team_colour": "FFD700"},
+
+    # Réservistes & numéros historiques OpenF1 Replay
+    38: {"full_name": "Oliver BEARMAN", "team_name": "Ferrari", "team_colour": "E8002D"},
+    50: {"full_name": "Oliver BEARMAN", "team_name": "Haas", "team_colour": "B6BABD"},
+    7: {"full_name": "Jack DOOHAN", "team_name": "Alpine", "team_colour": "0093CC"},
 }
 
 def format_lap_time(seconds: float) -> str:
