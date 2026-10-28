@@ -1,8 +1,31 @@
 import pandas as pd
 from typing import List, Dict, Optional
 
+# Dictionnaire de secours pour garantir que les noms/écuries s'affichent toujours
+FALLBACK_DRIVERS = {
+    1: {"full_name": "Max VERSTAPPEN", "team_name": "Red Bull Racing", "team_colour": "3671C6"},
+    16: {"full_name": "Charles LECLERC", "team_name": "Ferrari", "team_colour": "E8002D"},
+    44: {"full_name": "Lewis HAMILTON", "team_name": "Ferrari", "team_colour": "E8002D"},
+    4: {"full_name": "Lando NORRIS", "team_name": "McLaren", "team_colour": "FF8000"},
+    81: {"full_name": "Oscar PIASTRI", "team_name": "McLaren", "team_colour": "FF8000"},
+    63: {"full_name": "George RUSSELL", "team_name": "Mercedes", "team_colour": "27F4D2"},
+    12: {"full_name": "Kimi ANTONELLI", "team_name": "Mercedes", "team_colour": "27F4D2"},
+    14: {"full_name": "Fernando ALONSO", "team_name": "Aston Martin", "team_colour": "229971"},
+    18: {"full_name": "Lance STROLL", "team_name": "Aston Martin", "team_colour": "229971"},
+    10: {"full_name": "Pierre GASLY", "team_name": "Alpine", "team_colour": "0093CC"},
+    31: {"full_name": "Esteban OCON", "team_name": "Haas", "team_colour": "B6BABD"},
+    55: {"full_name": "Carlos SAINZ", "team_name": "Williams", "team_colour": "64C4FF"},
+    23: {"full_name": "Alexander ALBON", "team_name": "Williams", "team_colour": "64C4FF"},
+    5: {"full_name": "Gabriel BORTOLETO", "team_name": "Sauber", "team_colour": "52E252"},
+    27: {"full_name": "Nico HULKENBERG", "team_name": "Sauber", "team_colour": "52E252"},
+    30: {"full_name": "Liam LAWSON", "team_name": "Racing Bulls", "team_colour": "6692FF"},
+    6: {"full_name": "Isack HADJAR", "team_name": "Racing Bulls", "team_colour": "6692FF"},
+    41: {"full_name": "Oliver BEARMAN", "team_name": "Haas", "team_colour": "B6BABD"},
+    87: {"full_name": "Oliver BEARMAN", "team_name": "Haas", "team_colour": "B6BABD"}
+}
+
 def format_lap_time(seconds: float) -> str:
-    """Convertit un temps en secondes vers le format officiel F1 (M:SS.mmm)."""
+    """Formatte les secondes au format standard F1 (M:SS.mmm)."""
     if pd.isna(seconds) or seconds is None or seconds <= 0:
         return "-"
     minutes = int(seconds // 60)
@@ -17,13 +40,28 @@ class LapAnalyzer:
         self.drivers_df = pd.DataFrame(drivers_data) if drivers_data else pd.DataFrame()
 
         if not self.df.empty:
+            self.df['driver_number'] = pd.to_numeric(self.df['driver_number'], errors='coerce')
             cols = ['lap_duration', 'duration_sector_1', 'duration_sector_2', 'duration_sector_3']
             for c in cols:
                 if c in self.df.columns:
                     self.df[c] = pd.to_numeric(self.df[c], errors='coerce')
 
+    def get_driver_info(self, driver_number: int) -> Dict[str, str]:
+        """Récupère le nom et l'écurie avec gestion du fallback."""
+        if not self.drivers_df.empty and 'driver_number' in self.drivers_df.columns:
+            self.drivers_df['driver_number'] = pd.to_numeric(self.drivers_df['driver_number'], errors='coerce')
+            match = self.drivers_df[self.drivers_df['driver_number'] == driver_number]
+            if not match.empty:
+                row = match.iloc[0]
+                name = row.get('full_name') or row.get('broadcast_name') or str(driver_number)
+                team = row.get('team_name') or "N/A"
+                if name != str(driver_number) and team != "N/A":
+                    return {"full_name": name, "team_name": team}
+
+        # Utilisation du fallback si non trouvé dans l'API
+        return FALLBACK_DRIVERS.get(driver_number, {"full_name": f"Pilote #{driver_number}", "team_name": "Écurie N/A"})
+
     def get_leaderboard(self) -> pd.DataFrame:
-        """Leaderboard complet avec Nom, Écurie et temps au format M:SS.mmm."""
         if self.df.empty or 'lap_duration' not in self.df.columns:
             return pd.DataFrame()
 
@@ -34,19 +72,16 @@ class LapAnalyzer:
         idx_bests = valid_laps.groupby('driver_number')['lap_duration'].idxmin()
         best_laps = valid_laps.loc[idx_bests].copy()
 
-        # Jointure avec les métadonnées pilotes
-        if not self.drivers_df.empty and 'driver_number' in self.drivers_df.columns:
-            # On supprime les doublons éventuels de drivers_df
-            drivers_clean = self.drivers_df.drop_duplicates(subset=['driver_number'])
-            best_laps = best_laps.merge(
-                drivers_clean[['driver_number', 'full_name', 'team_name', 'team_colour']],
-                on='driver_number',
-                how='left'
-            )
-        else:
-            best_laps['full_name'] = best_laps['driver_number'].astype(str)
-            best_laps['team_name'] = "N/A"
-            best_laps['team_colour'] = "FFFFFF"
+        # Application du nom et de l'équipe
+        names = []
+        teams = []
+        for d_num in best_laps['driver_number']:
+            info = self.get_driver_info(d_num)
+            names.append(info["full_name"])
+            teams.append(info["team_name"])
+
+        best_laps['full_name'] = names
+        best_laps['team_name'] = teams
 
         # Formatage des temps
         best_laps['Temps au tour'] = best_laps['lap_duration'].apply(format_lap_time)
@@ -61,7 +96,6 @@ class LapAnalyzer:
         return best_laps[[c for c in cols_display if c in best_laps.columns]]
 
     def get_purple_sectors(self) -> Dict[str, str]:
-        """Retourne les secteurs violets formates en M:SS.mmm."""
         purple = {}
         if self.df.empty:
             return purple
@@ -86,4 +120,10 @@ class LapAnalyzer:
 
         comparison['lap_delta'] = comparison['lap_duration_A'] - comparison['lap_duration_B']
         comparison['cumulative_delta'] = comparison['lap_delta'].cumsum()
+        
+        # Ajout des formats lisibles M:SS.mmm pour le survol Plotly
+        comparison['time_A_str'] = comparison['lap_duration_A'].apply(format_lap_time)
+        comparison['time_B_str'] = comparison['lap_duration_B'].apply(format_lap_time)
+        comparison['delta_str'] = comparison['cumulative_delta'].apply(lambda x: f"{x:+.3f}s")
+        
         return comparison.reset_index()
