@@ -94,15 +94,15 @@ class LapAnalyzer:
 
         valid_laps = self.df.copy()
         
+<<<<<<< HEAD
         # Filtrage renforcé : exclusion des tours de sortie et des anomalies probables
+=======
+        # On ne supprime QUE si le temps final au tour n'existe pas
+        valid_laps = valid_laps.dropna(subset=['lap_duration'])
+        
+>>>>>>> 1a37a8c451c0e217740e9066942b6b8af9294a7b
         if 'is_pit_out_lap' in valid_laps.columns:
             valid_laps = valid_laps[valid_laps['is_pit_out_lap'] != True]
-            
-        sector_cols = ['duration_sector_1', 'duration_sector_2', 'duration_sector_3']
-        if all(col in valid_laps.columns for col in sector_cols):
-            valid_laps = valid_laps.dropna(subset=sector_cols + ['lap_duration'])
-        else:
-            valid_laps = valid_laps.dropna(subset=['lap_duration'])
 
         if valid_laps.empty:
             return pd.DataFrame()
