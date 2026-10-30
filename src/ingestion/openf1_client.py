@@ -52,3 +52,19 @@ class OpenF1Client:
 
     def get_race_control(self, session_key: int) -> List[Dict]:
         return self._get("race_control", {"session_key": session_key})
+
+    def get_stints(self, session_key: int) -> List[Dict]:
+        """Récupère les données de relais (type de pneus, usure, tours)."""
+        return self._get("stints", {"session_key": session_key})
+
+    def get_intervals(self, session_key: int) -> List[Dict]:
+        """Récupère les écarts en temps réel (gaps au leader et au pilote précédent)."""
+        return self._get("intervals", {"session_key": session_key})
+
+    def get_team_radio(self, session_key: int) -> List[Dict]:
+        """Récupère les communications radio avec les liens audio."""
+        return self._get("team_radio", {"session_key": session_key})
+
+    def get_car_data(self, session_key: int, driver_number: int) -> List[Dict]:
+        """Récupère la télémétrie très haute fréquence (Vitesse, RPM, Freins, Gaz, Rapport)."""
+        return self._get("car_data", {"session_key": session_key, "driver_number": driver_number})

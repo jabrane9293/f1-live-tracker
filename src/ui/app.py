@@ -3,6 +3,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import time
 
 from src.ingestion.openf1_client import OpenF1Client
 from src.analytics.lap_metrics import LapAnalyzer
@@ -22,18 +23,16 @@ def get_client():
 
 client = get_client()
 
-<<<<<<< HEAD
-=======
-# --- CACHE DES DONNÉES (Évite les déconnexions API et les rechargements intempestifs) ---
+# --- CACHE DES DONNÉES ---
 @st.cache_data(ttl=3600)
 def get_cached_location(session_key: int, driver_number: int):
     return client.get_location(session_key, driver_number=driver_number)
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=30) # 30s pour les chronos en Live
 def get_cached_laps(session_key: int):
     return client.get_laps(session_key)
 
-@st.cache_data(ttl=86400) # Cache de 24h pour les GP (ils ne changent pas)
+@st.cache_data(ttl=86400)
 def get_cached_meetings(year: int):
     return client.get_meetings(year)
 
@@ -41,17 +40,36 @@ def get_cached_meetings(year: int):
 def get_cached_sessions(meeting_key: int):
     return client.get_sessions(meeting_key)
 
-@st.cache_data(ttl=60) # Rafraîchi toutes les minutes pour le Live
+@st.cache_data(ttl=30)
 def get_cached_latest_session():
     return client.get_latest_session()
 
->>>>>>> 1a37a8c451c0e217740e9066942b6b8af9294a7b
-# --- SIDEBAR ---
+@st.cache_data(ttl=30)
+def get_cached_stints(session_key: int):
+    return client.get_stints(session_key)
+
+@st.cache_data(ttl=30)
+def get_cached_intervals(session_key: int):
+    return client.get_intervals(session_key)
+
+@st.cache_data(ttl=60)
+def get_cached_radio(session_key: int):
+    return client.get_team_radio(session_key)
+
+@st.cache_data(ttl=300) 
+def get_cached_car_data(session_key: int, driver_number: int):
+    return client.get_car_data(session_key, driver_number=driver_number)
+
+
+# --- SIDEBAR & GESTION DU LIVE ---
 st.sidebar.title("🏎️ Session Control")
 mode = st.sidebar.radio("Mode d'analyse :", ["Dernière Session / Live", "Replay Historique"])
 
+auto_refresh = False
 if mode == "Dernière Session / Live":
-    if st.sidebar.button("🔄 Rafraîchir les données Live"):
+    st.sidebar.markdown("---")
+    auto_refresh = st.sidebar.toggle("⏱️ Activer Auto-Refresh (15s)")
+    if st.sidebar.button("🔄 Rafraîchir manuellement"):
         st.cache_data.clear()
         st.rerun()
 
@@ -89,90 +107,63 @@ if session_key:
     sess_name = selected_session_info.get('session_name') or "Session"
     
     st.title(f"🏎️ {circuit_name} - {sess_name}")
+    if auto_refresh:
+        st.caption("🔴 DIRECT - Actualisation automatique activée.")
 
     laps_data = get_cached_laps(session_key)
     drivers_data = client.get_drivers(session_key)
     weather_data = client.get_weather(session_key)
     race_control = client.get_race_control(session_key)
+    stints_data = get_cached_stints(session_key)
+    intervals_data = get_cached_intervals(session_key)
 
     analyzer = LapAnalyzer(laps_data, drivers_data)
 
-    tab_lb, tab_telemetry, tab_ai, tab_weather = st.tabs([
-        "📊 Leaderboard & Stints", 
-        "🗺️ Tracé & Télémétrie 2D", 
-        "🤖 Stratégie & IA", 
+    tab_lb, tab_telemetry, tab_ai, tab_advanced, tab_radio, tab_weather = st.tabs([
+        "📊 Leaderboard & Pneus", 
+        "🗺️ Tracé 2D Animé", 
+        "🤖 Stratégie & IA",
+        "📈 Télémétrie Pédales",
+        "📻 Team Radio",
         "🚩 Météo & Race Control"
     ])
 
-    # --- TAB 1 : LEADERBOARD ---
+    # --- TAB 1 : LEADERBOARD, STINTS & INTERVALS ---
     with tab_lb:
-        st.subheader("Classement des meilleurs temps")
-<<<<<<< HEAD
-        st.caption("ℹ️ Note : Les données proviennent de la télémétrie brute OpenF1. Les tours annulés (Track Limits) peuvent ne pas être exclus si l'information n'est pas transmise par l'API.")
-        
-=======
->>>>>>> 1a37a8c451c0e217740e9066942b6b8af9294a7b
+        st.subheader("Classement, Écarts et Gommes")
         lb_df = analyzer.get_leaderboard()
+        
         if not lb_df.empty:
-            st.dataframe(lb_df, use_container_width=True, hide_index=True)
+            # Ajout des Pneus
+            if stints_data:
+                stints_df = pd.DataFrame(stints_data)
+                last_stints = stints_df.sort_values('stint_number').groupby('driver_number').tail(1)
+                last_stints['Pneus'] = last_stints['compound'] + " (" + last_stints['tyre_age_at_start'].astype(str) + " trs)"
+                lb_df = pd.merge(lb_df, last_stints[['driver_number', 'Pneus']], on='driver_number', how='left')
+                lb_df['Pneus'] = lb_df['Pneus'].fillna("Inconnu")
+            else:
+                lb_df['Pneus'] = "N/A"
+
+            # Ajout des Gaps (Écarts)
+            if intervals_data:
+                int_df = pd.DataFrame(intervals_data)
+                last_intervals = int_df.sort_values('date').groupby('driver_number').tail(1)
+                lb_df = pd.merge(lb_df, last_intervals[['driver_number', 'gap_to_leader', 'interval']], on='driver_number', how='left')
+                lb_df['Écart Leader'] = lb_df['gap_to_leader'].apply(lambda x: f"+{x}s" if pd.notna(x) else "-")
+                lb_df['Intervalle'] = lb_df['interval'].apply(lambda x: f"+{x}s" if pd.notna(x) else "-")
+            else:
+                lb_df['Écart Leader'] = "-"
+                lb_df['Intervalle'] = "-"
+
+            display_cols = ['Position', 'driver_number', 'full_name', 'team_name', 'Écart Leader', 'Intervalle', 'Pneus', 'Temps au tour', 'Secteur 1', 'Secteur 2', 'Secteur 3', 'lap_number']
+            st.dataframe(lb_df[[c for c in display_cols if c in lb_df.columns]], use_container_width=True, hide_index=True)
         else:
             st.info("Aucun chrono valide enregistré sur cette session pour le moment.")
 
         st.subheader("Secteurs Violets (Absolus)")
         purples = analyzer.get_purple_sectors()
         c1, c2, c3 = st.columns(3)
-<<<<<<< HEAD
-        
-        s1 = purples.get("duration_sector_1", {})
-        s2 = purples.get("duration_sector_2", {})
-        s3 = purples.get("duration_sector_3", {})
-        
-        c1.metric("Secteur 1", s1.get("time", "-"), s1.get("driver", ""))
-        c2.metric("Secteur 2", s2.get("time", "-"), s2.get("driver", ""))
-        c3.metric("Secteur 3", s3.get("time", "-"), s3.get("driver", ""))
 
-    # --- TAB 2 : TRACÉ & TÉLÉMÉTRIE 2D (ANIMATION NATIVE) ---
-    with tab_telemetry:
-        st.subheader("Tracé du circuit et Replay seconde par seconde")
-        st.caption("Sélectionnez quelques pilotes pour ne pas surcharger l'animation, puis utilisez le bouton Play du graphique.")
-        
-        if laps_data:
-            unique_drivers = sorted(list(set(pd.to_numeric(d['driver_number']) for d in laps_data if 'driver_number' in d)))
-            
-            # Sélection des pilotes pour l'animation (limité par défaut pour la fluidité)
-            selected_anim_drivers = st.multiselect(
-                "Pilotes à suivre en piste :", 
-                unique_drivers, 
-                default=unique_drivers[:3],
-                format_func=lambda x: f"{analyzer.get_driver_info(x)['full_name']} (#{x})"
-            )
-
-            if selected_anim_drivers:
-                with st.spinner("Téléchargement de la télémétrie GPS (peut prendre quelques secondes)..."):
-                    # 1. Dessin du tracé de base propre (Leader)
-                    circuit_locs = client.get_location(session_key, driver_number=unique_drivers[0])
-                    if circuit_locs:
-                        circuit_df = pd.DataFrame(circuit_locs)
-                        # TRI CRUCIAL pour éviter le "gribouillis"
-                        circuit_df['date_dt'] = pd.to_datetime(circuit_df['date'], format='ISO8601')
-                        circuit_df = circuit_df.sort_values('date_dt').iloc[::5]
-                        
-
-                        # 2. Récupération des positions pour les pilotes sélectionnés
-                        all_frames = []
-                        for d in selected_anim_drivers:
-                            d_locs = client.get_location(session_key, driver_number=d)
-                            if d_locs:
-                                d_df = pd.DataFrame(d_locs)
-                                d_df = d_df.sort_values('date')
-                                # Arrondi à la seconde pour regrouper les frames
-                                d_df['time_sec'] = pd.to_datetime(d_df['date'], format='ISO8601').dt.round('s').dt.strftime('%H:%M:%S')
-                                d_df['driver_name'] = analyzer.get_driver_info(d)['full_name']
-                                # On garde une position par seconde
-                                d_df = d_df.drop_duplicates(subset=['time_sec'])
-=======
-
-        # Fonction de sécurité pour extraire les secteurs
         def extract_sector_info(sec_data):
             if isinstance(sec_data, dict):
                 return sec_data.get("time", "-"), sec_data.get("driver", "")
@@ -188,135 +179,81 @@ if session_key:
         c2.metric("Secteur 2", s2_time, s2_driver)
         c3.metric("Secteur 3", s3_time, s3_driver)
 
-    # --- TAB 2 : TRACÉ & TÉLÉMÉTRIE 2D (COMPLET) ---
+    # --- TAB 2 : TRACÉ & TÉLÉMÉTRIE 2D ANIMÉ ---
     with tab_telemetry:
         st.subheader("Tracé du circuit et Replay complet du tour")
         
         if laps_data:
             laps_df = pd.DataFrame(laps_data)
-            unique_drivers = sorted(list(set(pd.to_numeric(laps_df['driver_number']))))
+            laps_df['driver_number'] = pd.to_numeric(laps_df['driver_number'], errors='coerce').fillna(0).astype(int)
+            laps_df = laps_df[laps_df['driver_number'] > 0]
+            
+            unique_drivers = sorted(list(set(laps_df['driver_number'])))
             max_laps = int(laps_df['lap_number'].max())
 
             col_lap, col_drv = st.columns([1, 2])
-            
-            selected_replay_lap = col_lap.number_input(
-                "Tour à rejouer :", 
-                min_value=1, 
-                max_value=max_laps, 
-                value=1,
-                key="telemetry_lap_input"
-            )
+            selected_replay_lap = col_lap.number_input("Tour à rejouer :", min_value=1, max_value=max_laps, value=1, key="telemetry_lap_input")
 
-            # Fixation des pilotes dans l'état de session
             if "telemetry_drivers" not in st.session_state:
                 st.session_state.telemetry_drivers = unique_drivers[:3]
 
-            selected_anim_drivers = col_drv.multiselect(
-                "Pilotes à suivre en piste :", 
-                unique_drivers, 
-                key="telemetry_drivers",
-                format_func=lambda x: f"{analyzer.get_driver_info(x)['full_name']} (#{x})"
-            )
+            selected_anim_drivers = col_drv.multiselect("Pilotes à suivre en piste :", unique_drivers, key="telemetry_drivers", format_func=lambda x: f"{analyzer.get_driver_info(x)['full_name']} (#{x})")
 
             if selected_anim_drivers:
-                with st.spinner("Génération de la télémétrie du tour (boucle complète)..."):
-                    circuit_locs = get_cached_location(session_key, driver_number=unique_drivers[0])
+                with st.spinner("Génération de l'animation..."):
+                    circuit_locs = []
+                    for fallback_driver in unique_drivers:
+                        locs = get_cached_location(session_key, driver_number=fallback_driver)
+                        if locs and len(locs) > 50:
+                            circuit_locs = locs
+                            break 
+
                     if circuit_locs:
                         circuit_df = pd.DataFrame(circuit_locs)
-                        circuit_df['date_dt'] = pd.to_datetime(circuit_df['date'], format='ISO8601')
+                        circuit_df['date_dt'] = pd.to_datetime(circuit_df['date'], format='ISO8601', utc=True)
                         circuit_df = circuit_df.sort_values('date_dt').iloc[::5]
 
                         lap_time_bounds = laps_df[laps_df['lap_number'] == selected_replay_lap]
                         all_frames = []
+                        FRAME_COUNT = 100
 
                         for d in selected_anim_drivers:
                             d_locs = get_cached_location(session_key, driver_number=d)
                             if d_locs:
                                 d_df = pd.DataFrame(d_locs)
-                                d_df['date_dt'] = pd.to_datetime(d_df['date'], format='ISO8601')
+                                d_df['date_dt'] = pd.to_datetime(d_df['date'], format='ISO8601', utc=True)
                                 d_df = d_df.sort_values('date_dt')
 
                                 d_laps = lap_time_bounds[lap_time_bounds['driver_number'] == d]
                                 if not d_laps.empty and 'date_start' in d_laps.columns:
-                                    t_start = pd.to_datetime(d_laps.iloc[0]['date_start'], format='ISO8601')
+                                    t_start = pd.to_datetime(d_laps.iloc[0]['date_start'], format='ISO8601', utc=True)
                                     lap_dur = d_laps.iloc[0].get('lap_duration')
                                     
-                                    # Cadrage sur toute la durée du tour
                                     if pd.notna(lap_dur):
                                         t_end = t_start + pd.Timedelta(seconds=lap_dur)
                                         d_df = d_df[(d_df['date_dt'] >= t_start) & (d_df['date_dt'] <= t_end)]
                                     else:
                                         d_df = d_df[d_df['date_dt'] >= t_start].iloc[:350]
 
-                                # Sous-échantillonnage pour fluidité Plotly
-                                if len(d_df) > 80:
-                                    step = len(d_df) // 80
-                                    d_df = d_df.iloc[::step]
-                                    
-                                d_df['step'] = range(len(d_df))
-                                d_df['driver_name'] = analyzer.get_driver_info(d)['full_name']
->>>>>>> 1a37a8c451c0e217740e9066942b6b8af9294a7b
-                                all_frames.append(d_df)
+                                    if len(d_df) > 0:
+                                        indices = [int(i * len(d_df) / FRAME_COUNT) for i in range(FRAME_COUNT)]
+                                        d_df = d_df.iloc[indices].copy()
+                                        d_df['step'] = range(FRAME_COUNT)
+                                        d_df['driver_name'] = analyzer.get_driver_info(d)['full_name']
+                                        all_frames.append(d_df)
 
                         if all_frames:
                             anim_df = pd.concat(all_frames)
-<<<<<<< HEAD
-                            anim_df = anim_df.sort_values('time_sec')
-
-                            # Graphique Plotly Animé
-                            fig_anim = px.scatter(
-                                anim_df, x='x', y='y', color='driver_name',
-                                animation_frame='time_sec',
-                                hover_name='driver_name'
-                            )
-                            
-                            # Ajout du tracé fixe en arrière-plan
-                            fig_anim.add_trace(go.Scatter(
-                                x=circuit_df['x'], y=circuit_df['y'],
-                                mode='lines', line=dict(color='gray', width=2),
-                                name='Piste', hoverinfo='skip', opacity=0.5
-                            ))
-
-                            fig_anim.update_layout(
-                                template="plotly_dark",
-                                height=700,
-                                xaxis=dict(showgrid=False, zeroline=False, visible=False),
-                                yaxis=dict(showgrid=False, zeroline=False, visible=False),
-                                updatemenus=[dict(type="buttons", buttons=[dict(label="▶️ Play", method="animate", args=[None])])]
-                            )
-                            
-                            # Ajustement de la vitesse de l'animation
-                            fig_anim.layout.updatemenus[0].buttons[0].args[1]['frame']['duration'] = 200
-                            
-                            st.plotly_chart(fig_anim, use_container_width=True)
-                        else:
-                            st.warning("Données GPS introuvables pour ces pilotes.")
-=======
-                            fig_anim = px.scatter(
-                                anim_df, x='x', y='y', color='driver_name',
-                                animation_frame='step', hover_name='driver_name'
-                            )
-                            
-                            fig_anim.add_trace(go.Scatter(
-                                x=circuit_df['x'], y=circuit_df['y'],
-                                mode='lines', line=dict(color='gray', width=2),
-                                name='Piste', hoverinfo='skip', opacity=0.4
-                            ))
-
-                            fig_anim.update_layout(
-                                template="plotly_dark", height=650,
-                                xaxis=dict(showgrid=False, zeroline=False, visible=False),
-                                yaxis=dict(showgrid=False, zeroline=False, visible=False)
-                            )
-                            
+                            fig_anim = px.scatter(anim_df, x='x', y='y', color='driver_name', animation_frame='step', hover_name='driver_name')
+                            fig_anim.update_traces(marker=dict(size=14, line=dict(width=2, color='white')), selector=dict(mode='markers'))
+                            fig_anim.add_trace(go.Scatter(x=circuit_df['x'], y=circuit_df['y'], mode='lines', line=dict(color='gray', width=3), name='Piste', hoverinfo='skip', opacity=0.4))
+                            fig_anim.update_layout(template="plotly_dark", height=650, xaxis=dict(showgrid=False, zeroline=False, visible=False), yaxis=dict(showgrid=False, zeroline=False, visible=False))
                             if getattr(fig_anim.layout, 'updatemenus', None):
-                                fig_anim.layout.updatemenus[0].buttons[0].args[1]['frame']['duration'] = 200
-                                fig_anim.layout.updatemenus[0].buttons[0].args[1]['transition']['duration'] = 100
-                            
+                                fig_anim.layout.updatemenus[0].buttons[0].args[1]['frame']['duration'] = 150
+                                fig_anim.layout.updatemenus[0].buttons[0].args[1]['transition']['duration'] = 50
                             st.plotly_chart(fig_anim, use_container_width=True)
                         else:
                             st.warning("Télémétrie GPS incomplète pour ce tour.")
->>>>>>> 1a37a8c451c0e217740e9066942b6b8af9294a7b
                     else:
                         st.warning("Impossible de générer le tracé du circuit.")
 
@@ -325,18 +262,9 @@ if session_key:
         st.subheader("Analyse comparative et Stratégie d'Undercut")
         if laps_data and len(laps_data) > 5:
             drivers_list = sorted(list(set(pd.to_numeric(d['driver_number']) for d in laps_data if 'driver_number' in d)))
-            
             col_a, col_b = st.columns(2)
-            d_chase = col_a.selectbox(
-                "Pilote 1 (Poursuivant) :", drivers_list, 
-                format_func=lambda x: f"{analyzer.get_driver_info(x)['full_name']} (#{x})", 
-                index=0, key="strat_chase"
-            )
-            d_lead = col_b.selectbox(
-                "Pilote 2 (Devant) :", drivers_list, 
-                format_func=lambda x: f"{analyzer.get_driver_info(x)['full_name']} (#{x})", 
-                index=min(1, len(drivers_list)-1), key="strat_lead"
-            )
+            d_chase = col_a.selectbox("Pilote 1 (Poursuivant) :", drivers_list, format_func=lambda x: f"{analyzer.get_driver_info(x)['full_name']} (#{x})", index=0, key="strat_chase")
+            d_lead = col_b.selectbox("Pilote 2 (Devant) :", drivers_list, format_func=lambda x: f"{analyzer.get_driver_info(x)['full_name']} (#{x})", index=min(1, len(drivers_list)-1), key="strat_lead")
 
             if d_chase != d_lead:
                 delta_df = analyzer.calculate_driver_delta(d_chase, d_lead)
@@ -344,56 +272,83 @@ if session_key:
                     info_chase = analyzer.get_driver_info(d_chase)
                     info_lead = analyzer.get_driver_info(d_lead)
                     max_avail_lap = int(delta_df['lap_number'].max())
-                    
-                    selected_lap = st.slider(
-                        "Tour d'analyse stratégique :", 
-                        min_value=1, max_value=max_avail_lap, value=1, key="strat_slider"
-                    )
-
-<<<<<<< HEAD
-                    st.markdown("### 🚨 Analyse de Piste")
-=======
->>>>>>> 1a37a8c451c0e217740e9066942b6b8af9294a7b
+                    selected_lap = st.slider("Tour d'analyse stratégique :", min_value=1, max_value=max_avail_lap, value=1, key="strat_slider")
                     current_gap = delta_df[delta_df['lap_number'] <= selected_lap]['cumulative_delta'].iloc[-1]
                     
                     if abs(current_gap) <= 2.0:
-                        st.success(
-                            f"🚨 **ALERTE STRATÉGIE (Tour {selected_lap})** : "
-                            f"{info_chase['full_name']} est à **{abs(current_gap):.3f}s** de {info_lead['full_name']}. "
-                            f"Fenêtre d'undercut OUVERTE s'il boxe !"
-                        )
+                        st.success(f"🚨 **ALERTE STRATÉGIE (Tour {selected_lap})** : {info_chase['full_name']} est à **{abs(current_gap):.3f}s** de {info_lead['full_name']}. Fenêtre d'undercut OUVERTE s'il boxe !")
                     else:
                         st.info(f"Écart au tour {selected_lap} : {abs(current_gap):.3f}s. Hors fenêtre d'undercut (> 2.0s).")
 
-                    fig = make_subplots(
-                        rows=2, cols=1, shared_xaxes=True, 
-                        subplot_titles=("Temps au tour individuels (M:SS.mmm)", "Écart cumulé (Secondes)"),
-                        vertical_spacing=0.12
-                    )
-
-                    fig.add_trace(go.Scatter(
-                        x=delta_df['lap_number'], y=delta_df['lap_duration_A'],
-                        name=info_chase['full_name'], hovertext=delta_df['time_A_str'],
-                        hovertemplate="Tour %{x}<br>Chrono: %{hovertext}<extra></extra>"
-                    ), row=1, col=1)
-
-                    fig.add_trace(go.Scatter(
-                        x=delta_df['lap_number'], y=delta_df['lap_duration_B'],
-                        name=info_lead['full_name'], hovertext=delta_df['time_B_str'],
-                        hovertemplate="Tour %{x}<br>Chrono: %{hovertext}<extra></extra>"
-                    ), row=1, col=1)
-
-                    fig.add_trace(go.Scatter(
-                        x=delta_df['lap_number'], y=delta_df['cumulative_delta'],
-                        name="Delta Cumulé", hovertext=delta_df['delta_str'],
-                        hovertemplate="Tour %{x}<br>Écart: %{hovertext}<extra></extra>",
-                        line=dict(color='yellow', dash='dot')
-                    ), row=2, col=1)
-
+                    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, subplot_titles=("Temps au tour individuels (M:SS.mmm)", "Écart cumulé (Secondes)"), vertical_spacing=0.12)
+                    fig.add_trace(go.Scatter(x=delta_df['lap_number'], y=delta_df['lap_duration_A'], name=info_chase['full_name'], hovertext=delta_df['time_A_str'], hovertemplate="Tour %{x}<br>Chrono: %{hovertext}<extra></extra>"), row=1, col=1)
+                    fig.add_trace(go.Scatter(x=delta_df['lap_number'], y=delta_df['lap_duration_B'], name=info_lead['full_name'], hovertext=delta_df['time_B_str'], hovertemplate="Tour %{x}<br>Chrono: %{hovertext}<extra></extra>"), row=1, col=1)
+                    fig.add_trace(go.Scatter(x=delta_df['lap_number'], y=delta_df['cumulative_delta'], name="Delta Cumulé", hovertext=delta_df['delta_str'], hovertemplate="Tour %{x}<br>Écart: %{hovertext}<extra></extra>", line=dict(color='yellow', dash='dot')), row=2, col=1)
                     fig.update_layout(template="plotly_dark", height=650)
                     st.plotly_chart(fig, use_container_width=True)
 
-    # --- TAB 4 : MÉTÉO & RACE CONTROL ---
+    # --- TAB 4 : TÉLÉMÉTRIE AVANCÉE (PÉDALES/VITESSE) ---
+    with tab_advanced:
+        st.subheader("Télémétrie brute (Accélération, Frein, Vitesse, Rapports)")
+        st.caption("Données échantillonnées à 3.7Hz.")
+        
+        if laps_data:
+            unique_drivers = sorted(list(set(pd.to_numeric(pd.DataFrame(laps_data)['driver_number']))))
+            c_drv, c_lap = st.columns(2)
+            sel_drv = c_drv.selectbox("Pilote (Télémétrie) :", unique_drivers, format_func=lambda x: f"{analyzer.get_driver_info(x)['full_name']} (#{x})", key="adv_drv")
+            
+            driver_laps = pd.DataFrame(laps_data)
+            driver_laps = driver_laps[driver_laps['driver_number'] == sel_drv].dropna(subset=['lap_duration'])
+            
+            if not driver_laps.empty:
+                sel_lap = c_lap.selectbox("Tour d'analyse :", sorted(driver_laps['lap_number'].unique(), reverse=True), key="adv_lap")
+                
+                with st.spinner("Téléchargement de la télémétrie haute fréquence..."):
+                    car_data = get_cached_car_data(session_key, sel_drv)
+                    if car_data:
+                        cd_df = pd.DataFrame(car_data)
+                        cd_df['date_dt'] = pd.to_datetime(cd_df['date'], format='ISO8601', utc=True)
+                        
+                        lap_info = driver_laps[driver_laps['lap_number'] == sel_lap].iloc[0]
+                        t_start = pd.to_datetime(lap_info['date_start'], format='ISO8601', utc=True)
+                        t_end = t_start + pd.Timedelta(seconds=lap_info['lap_duration'])
+                        
+                        tour_df = cd_df[(cd_df['date_dt'] >= t_start) & (cd_df['date_dt'] <= t_end)]
+                        
+                        if not tour_df.empty:
+                            fig_adv = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.05, subplot_titles=("Vitesse (km/h)", "Pédales : Gaz (%) & Frein (%)", "Rapport de boîte (Gear)"))
+                            fig_adv.add_trace(go.Scatter(x=tour_df['date_dt'], y=tour_df['speed'], name="Vitesse", line=dict(color="cyan")), row=1, col=1)
+                            fig_adv.add_trace(go.Scatter(x=tour_df['date_dt'], y=tour_df['throttle'], name="Gaz", line=dict(color="green")), row=2, col=1)
+                            fig_adv.add_trace(go.Scatter(x=tour_df['date_dt'], y=tour_df['brake'], name="Frein", line=dict(color="red")), row=2, col=1)
+                            fig_adv.add_trace(go.Scatter(x=tour_df['date_dt'], y=tour_df['n_gear'], name="Gear", mode="lines+markers", line=dict(color="orange")), row=3, col=1)
+                            fig_adv.update_layout(template="plotly_dark", height=800, hovermode="x unified")
+                            st.plotly_chart(fig_adv, use_container_width=True)
+                        else:
+                            st.warning("Données non disponibles pour ce tour précis.")
+                    else:
+                        st.warning("Télémétrie indisponible pour ce pilote.")
+
+    # --- TAB 5 : TEAM RADIO ---
+    with tab_radio:
+        st.subheader("📻 Communications Team Radio")
+        radios = get_cached_radio(session_key)
+        
+        if radios:
+            radio_df = pd.DataFrame(radios)
+            radio_df['date_dt'] = pd.to_datetime(radio_df['date'], format='ISO8601', utc=True)
+            radio_df = radio_df.sort_values('date_dt', ascending=False).head(20)
+            
+            st.write(f"Derniers messages captés ({len(radio_df)} affichés) :")
+            for _, r in radio_df.iterrows():
+                d_info = analyzer.get_driver_info(r['driver_number'])
+                col_info, col_audio = st.columns([1, 2])
+                col_info.markdown(f"**{d_info['full_name']}** ({d_info['team_name']})<br/>*{r['date_dt'].strftime('%H:%M:%S')}*", unsafe_allow_html=True)
+                col_audio.audio(r['recording_url'])
+                st.divider()
+        else:
+            st.info("Aucun message radio hébergé par l'API pour cette session.")
+
+    # --- TAB 6 : MÉTÉO & RACE CONTROL ---
     with tab_weather:
         col_w, col_rc = st.columns(2)
         with col_w:
@@ -419,5 +374,15 @@ if session_key:
                 st.dataframe(rc_df, use_container_width=True, hide_index=True)
             else:
                 st.write("Aucun message de direction de course.")
+
+    # --- BOUCLE D'AUTO-REFRESH NATIVE ---
+    if auto_refresh:
+        time.sleep(15)
+        st.cache_data.clear()
+        st.rerun()
+
 else:
-    st.error("Impossible de récupérer les données de session OpenF1. En attente du début de séance...")
+    st.error("En attente du début de la séance...")
+    if auto_refresh:
+        time.sleep(15)
+        st.rerun()
