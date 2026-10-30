@@ -92,8 +92,9 @@ class LapAnalyzer:
         if self.df.empty or 'lap_duration' not in self.df.columns:
             return pd.DataFrame()
 
-        # Filtrage strict : Exclure les out-laps et les tours sans les 3 secteurs valides
         valid_laps = self.df.copy()
+        
+        # Filtrage renforcé : exclusion des tours de sortie et des anomalies probables
         if 'is_pit_out_lap' in valid_laps.columns:
             valid_laps = valid_laps[valid_laps['is_pit_out_lap'] != True]
             
@@ -106,7 +107,6 @@ class LapAnalyzer:
         if valid_laps.empty:
             return pd.DataFrame()
 
-        # Meilleur tour absolu par pilote
         idx_bests = valid_laps.groupby('driver_number')['lap_duration'].idxmin()
         best_laps = valid_laps.loc[idx_bests].copy()
 
@@ -129,16 +129,24 @@ class LapAnalyzer:
         cols_display = ['Position', 'driver_number', 'full_name', 'team_name', 'Temps au tour', 'Secteur 1', 'Secteur 2', 'Secteur 3', 'lap_number']
         return best_laps[[c for c in cols_display if c in best_laps.columns]]
 
-    def get_purple_sectors(self) -> Dict[str, str]:
+    def get_purple_sectors(self) -> Dict[str, Dict[str, str]]:
+        """Retourne le temps violet ET le nom du pilote qui le détient."""
         purple = {}
         if self.df.empty:
             return purple
         for sector in ['duration_sector_1', 'duration_sector_2', 'duration_sector_3']:
             if sector in self.df.columns and not self.df[sector].dropna().empty:
-                val = self.df[sector].min()
-                purple[sector] = format_lap_time(val)
+                idx = self.df[sector].idxmin()
+                best_row = self.df.loc[idx]
+                d_num = best_row['driver_number']
+                info = self.get_driver_info(d_num)
+                
+                purple[sector] = {
+                    "time": format_lap_time(best_row[sector]),
+                    "driver": info["full_name"]
+                }
             else:
-                purple[sector] = "-"
+                purple[sector] = {"time": "-", "driver": "-"}
         return purple
 
     def calculate_driver_delta(self, driver_a: int, driver_b: int) -> pd.DataFrame:
